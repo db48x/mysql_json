@@ -45,6 +45,9 @@ extern "C" {
 my_bool json_get_init(UDF_INIT* initid, UDF_ARGS* args, char* message);
 void json_get_deinit(UDF_INIT* initid);
 const char* json_get(UDF_INIT* initid, UDF_ARGS* args, char* result, unsigned long* length, char* is_null, char* error);
+my_bool json_valid_init(UDF_INIT* initid, UDF_ARGS* args, char* message);
+void json_valid_deinit(UDF_INIT* initid);
+const long long json_valid(UDF_INIT* initid, UDF_ARGS* args, char* result, unsigned long* length, char* is_null, char* error);
 }
 
 my_bool json_get_init(UDF_INIT* initid, UDF_ARGS* args, char* message)
@@ -317,4 +320,98 @@ const char* json_get(UDF_INIT* initid, UDF_ARGS* args, char* result, unsigned lo
     initid->const_item = CONST_ITEM_CACHED_VALUE;
   }
   return g_ctx.out->data();
+}
+
+my_bool json_valid_init(UDF_INIT* initid, UDF_ARGS* args, char* message)
+{
+  if (args->arg_count < 1) {
+    strcpy(message, "json_valid: too few arguments");
+    return 1;
+  }
+  if (args->arg_count > 1) {
+    strcpy(message, "json_valid: too many arguments");
+    return 1;
+  }
+  if (args->arg_type[0] != STRING_RESULT) {
+    strcpy(message, "json_valid: 1st argument should be a string");
+    return 1;
+  }
+#ifdef DEBUG_JSON_GET
+  fprintf(stderr, "json_valid_init(): arg_count=%d maybe_null=%d const_item=%d\n",
+    args->arg_count, initid->maybe_null, initid->const_item);
+#endif
+  initid->ptr = (char*)(void*)new std::string();
+  initid->maybe_null = 1;
+  return 0;
+}
+
+void json_valid_deinit(UDF_INIT* initid)
+{
+#ifdef DEBUG_JSON_GET
+  fprintf(stderr, "json_valid_deinit()\n");
+#endif
+  delete (std::string*)(void*)initid->ptr;
+}
+
+const long long json_valid(UDF_INIT* initid, UDF_ARGS* args, char* result, unsigned long* length, char* is_null, char* error)
+{
+#ifdef DEBUG_JSON_GET
+  fprintf(stderr, "json_valid(");
+#endif
+  // Return cached values based on special values of const_item
+  if (initid->const_item == CONST_ITEM_CACHED_VALUE) {
+#ifdef DEBUG_JSON_GET
+    fprintf(stderr, ") = \"%lld\" (cached)\n", ((long long)(void*)initid->ptr));
+#endif
+    return ((long long)(void*)initid->ptr);
+  } else if (initid->const_item == CONST_ITEM_CACHED_NULL) {
+#ifdef DEBUG_JSON_GET
+    fprintf(stderr, ") = NULL (cached)\n");
+#endif
+    *is_null = 1;
+    return 0;
+  }
+
+  // Return NULL if any args are NULL
+  for (unsigned i = 0; i < args->arg_count; ++i) {
+#ifdef DEBUG_JSON_GET
+    if (i) {
+      fputc(',', stderr);
+      fputc(' ', stderr);
+    }
+#endif
+    if (!args->args[i]) {
+      *is_null = 1;
+      if (initid->const_item == CONST_ITEM_TRUE) {
+	initid->const_item = CONST_ITEM_CACHED_NULL;
+      }
+#ifdef DEBUG_JSON_GET
+      fprintf(stderr, "NULL%s) = NULL\n",
+        i + 1 == args->arg_count ? "" : ", ...");
+#endif
+      return 0;
+    }
+#ifdef DEBUG_JSON_GET
+    if (args->arg_type[i] == INT_RESULT)
+      fprintf(stderr, "%ld", (size_t)*(long long*)args->args[i]);
+    else
+      fprintf(stderr, "\"%.*s\"", (int)args->lengths[i], args->args[i]);
+#endif
+  }
+
+  picojson::value v;
+  long long valid = 1;
+  std::string err;
+  picojson::parse(v, args->args[0], args->args[0] + args->lengths[0],
+                  &err);
+  if (! err.empty()) {
+    valid = 0;
+  }
+#ifdef DEBUG_JSON_GET
+  fprintf(stderr, ") = \"%lld\"\n", valid);
+#endif
+  if (initid->const_item == CONST_ITEM_TRUE) {
+    initid->const_item = CONST_ITEM_CACHED_VALUE;
+  }
+  return valid;
 }
